@@ -7,7 +7,7 @@ const APPS = [
   { name: 'Flux Career', url: 'https://flux-career-cyan.vercel.app/', logo: '/logos/flux-career.svg' },
   { name: 'Flux Finance', url: 'https://flux-finance-ivory.vercel.app/', logo: '/logos/flux-finance.svg' },
   { name: 'Flux AI Bubble Monitor', url: 'https://ai-bubble-monitor-delta.vercel.app/', logo: '/logos/ai-bubble-monitor.svg' },
-  { name: 'Flux Glow', url: 'https://flux-glow.vercel.app/', logo: '/logos/flux-glow.svg' },
+  { name: 'Flux Glow', url: 'https://flux-glow-f60xl28cu-fox-1121.vercel.app/', logo: '/logos/flux-glow.svg' },
 ]
 
 export function OtherApps() {
