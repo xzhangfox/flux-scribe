@@ -100,7 +100,7 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
           <div role="tablist" className="glass mb-4 grid grid-cols-3 gap-1 rounded-2xl p-1 lg:hidden">
             {(['minutes', 'transcript', 'ask'] as const).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`rounded-xl py-2.5 text-[11px] font-bold uppercase tracking-widest transition ${tab === t ? 'bg-primary text-black' : 'text-muted'}`}>
-                {t === 'ask' ? 'Ask AI' : t}
+                {t === 'ask' ? 'Ask AI' : t === 'minutes' ? 'Minutes' : 'Transcript'}
               </button>
             ))}
           </div>
