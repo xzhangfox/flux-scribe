@@ -1,0 +1,63 @@
+@import "tailwindcss";
+@import "./styles/flux-theme.css";
+
+/* Every colour resolves through the Flux family theme variables
+   (styles/flux-theme.css): switching theme recolours the whole app. */
+@theme {
+  --color-primary: var(--primary);
+  --color-surface: var(--surface-dark);
+  --color-surface-strong: var(--surface-light);
+  --color-white: var(--text-main);
+  --color-muted: var(--text-secondary);
+  --color-danger: #ef6b6b;
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+body {
+  background: transparent;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.glass {
+  background: var(--surface-dark);
+  border: 1px solid var(--surface-border);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.glass-strong {
+  background: var(--surface-light);
+  border: 1px solid var(--surface-border-strong);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+}
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* The family's emblem treatment: a breathing glow with a periodic
+   specular flash (see flux-ambient-ui-system). */
+@keyframes specularFlash {
+  0%, 85% { filter: drop-shadow(0 0 10px rgba(var(--primary-rgb), 0.3)) brightness(1); }
+  92% { filter: drop-shadow(0 0 30px rgba(255, 255, 255, 0.6)) brightness(1.35); }
+  100% { filter: drop-shadow(0 0 10px rgba(var(--primary-rgb), 0.3)) brightness(1); }
+}
+.emblem-flash { animation: specularFlash 5s infinite ease-in-out; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.55; }
+  50% { transform: scale(1.12); opacity: 0.9; }
+}
+.breathe { animation: breathe 2.6s ease-in-out infinite; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .emblem-flash, .breathe, .fade-up { animation: none; }
+}
