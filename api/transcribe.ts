@@ -1,6 +1,7 @@
 import { FileState, ThinkingLevel, Type, createPartFromUri, type Part } from '@google/genai'
 import { HttpError, MODEL, client, handle, isMock, parseModelJson, readJson } from './_lib/gemini.js'
-import { mockTranscript } from './_lib/mock.js'
+import { mockTranscript } from '../shared/demo-meeting.js'
+import { requireUser } from './_lib/auth.js'
 
 // Transcription with speaker separation, in a single pass over the audio.
 // Accuracy comes from: the full recording in one request (so speaker
@@ -75,6 +76,7 @@ async function waitUntilActive(name: string) {
 }
 
 export const POST = handle(async (req) => {
+  requireUser(req)
   const body = await readJson<Body>(req)
   if (!body.inline && !body.file) throw new HttpError(400, 'No audio was provided.')
   const context = (body.context || '').slice(0, 2000)

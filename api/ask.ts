@@ -1,6 +1,7 @@
 import { ThinkingLevel } from '@google/genai'
 import { HttpError, MODEL, client, handle, isMock, readJson } from './_lib/gemini.js'
-import { mockAnswer } from './_lib/mock.js'
+import { mockAnswer } from '../shared/demo-meeting.js'
+import { requireUser } from './_lib/auth.js'
 
 // The meeting assistant: answers strictly from this meeting's transcript,
 // citing the moments it draws on as [m:ss] so the app can link them.
@@ -10,6 +11,7 @@ interface Body {
 }
 
 export const POST = handle(async (req) => {
+  requireUser(req)
   const { transcript, messages } = await readJson<Body>(req)
   if (!transcript?.trim()) throw new HttpError(400, 'Transcript is empty.')
   const history = (messages || []).filter((m) => m && typeof m.content === 'string' && m.content.trim()).slice(-12)

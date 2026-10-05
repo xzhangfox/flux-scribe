@@ -1,6 +1,7 @@
 import { ThinkingLevel, Type } from '@google/genai'
 import { HttpError, MODEL, client, handle, isMock, parseModelJson, readJson } from './_lib/gemini.js'
-import { mockMinutes } from './_lib/mock.js'
+import { mockMinutes } from '../shared/demo-meeting.js'
+import { requireUser } from './_lib/auth.js'
 
 // Meeting minutes from the finished transcript — text in, so it costs a
 // tiny fraction of the audio pass and can be regenerated freely.
@@ -32,6 +33,7 @@ const SCHEMA = {
 }
 
 export const POST = handle(async (req) => {
+  requireUser(req)
   const { transcript } = await readJson<{ transcript: string }>(req)
   if (!transcript?.trim()) throw new HttpError(400, 'Transcript is empty.')
   if (isMock()) return mockMinutes()

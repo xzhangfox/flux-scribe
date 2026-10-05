@@ -1,5 +1,5 @@
-// Canned responses for local development and UI work without an API key:
-// set SCRIBE_MOCK=1. Never used unless that flag is set.
+// The sample meeting, shared by the guest demo (client) and the server's
+// mock mode (SCRIBE_MOCK=1, for local development without an API key).
 const LINES: [string, number, string][] = [
   ['S1', 0, "Okay, let's get started. Thanks everyone for joining — this is the Q4 launch sync for Flux Scribe."],
   ['S2', 7, 'Thanks, Maya. Quick update from engineering: speaker separation is done and the accuracy on our test set is around ninety-four percent.'],

@@ -1,4 +1,5 @@
 import { HttpError, client, handle, isMock, readJson } from './_lib/gemini.js'
+import { requireUser } from './_lib/auth.js'
 
 // Long recordings exceed a serverless request body (~4.5 MB on Vercel), so
 // the browser uploads them straight to the Gemini Files API. This opens a
@@ -8,6 +9,7 @@ const ALLOWED = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/a
 const MAX_BYTES = 400 * 1024 * 1024
 
 export const POST = handle(async (req) => {
+  requireUser(req)
   const { mimeType, size, displayName } = await readJson<{ mimeType: string; size: number; displayName?: string }>(req)
   if (!ALLOWED.includes(mimeType)) throw new HttpError(400, `Unsupported audio type: ${mimeType}`)
   if (!Number.isFinite(size) || size <= 0 || size > MAX_BYTES) throw new HttpError(400, 'Audio must be between 1 byte and 400 MB.')

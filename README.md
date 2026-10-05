@@ -10,6 +10,14 @@ Record a meeting (or upload a recording) and get a speaker-separated transcript,
 - Clips of 3 MB or less are sent inline. Larger files go straight from the browser to the Gemini Files API through a resumable upload URL. The server never relays the bytes, and the file is deleted after transcription.
 - Meetings are stored only in the browser, in IndexedDB.
 
+## Access
+
+Only signed-in users can reach the AI endpoints, so nobody else can spend the Gemini quota:
+
+- **Sign in with a Flux account** (same email and password as Flux). The server checks the credentials and sets a signed, HttpOnly session cookie; every `/api/*` AI call is rejected without it.
+- **`SCRIBE_ALLOWED_EMAILS`** decides which Flux accounts get in (comma-separated, or `*` for all). Unset means nobody — it fails closed. Removing an email takes effect immediately.
+- **Guests** explore a read-only demo: a fully processed sample meeting with working Q&A, all on the device — no API calls. Their demo library is separate from the real one.
+
 ## Run
 
 ```bash
@@ -20,4 +28,4 @@ npm run dev             # SCRIBE_MOCK=1 npm run dev to try it without a key
 
 ## Deploy
 
-Import the repo into Vercel and set `GEMINI_API_KEY`. The functions in `api/` run on Vercel; `vercel.json` sets their time limits.
+Import the repo into Vercel and set `GEMINI_API_KEY` and `SCRIBE_ALLOWED_EMAILS`. The functions in `api/` run on Vercel; `vercel.json` sets their time limits.

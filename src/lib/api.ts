@@ -1,8 +1,15 @@
 import type { ChatMessage, Minutes, Segment, Speaker } from './types'
+import { SIGNED_OUT, isGuest } from './session'
+import { demoAnswer } from './demo'
+
+export const GUEST_BLOCKED = 'Sign in with your Flux account to transcribe your own recordings.'
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  // Guests never reach the AI endpoints (the server would refuse anyway).
+  if (isGuest()) throw new Error(GUEST_BLOCKED)
+  const res = await fetch(`/api/${path}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const data = await res.json().catch(() => ({}))
+  if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT))
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`)
   return data as T
 }
@@ -72,4 +79,5 @@ export async function transcribe(
 
 export const writeMinutes = (transcript: string) => post<Minutes>('minutes', { transcript })
 
-export const ask = (transcript: string, messages: ChatMessage[]) => post<{ reply: string }>('ask', { transcript, messages }).then((r) => r.reply)
+export const ask = (transcript: string, messages: ChatMessage[]) =>
+  isGuest() ? demoAnswer(messages[messages.length - 1]?.content ?? '') : post<{ reply: string }>('ask', { transcript, messages }).then((r) => r.reply)

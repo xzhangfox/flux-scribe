@@ -6,7 +6,9 @@ import { ContextSheet } from './components/ContextSheet'
 import { MeetingView } from './components/MeetingView'
 import { SettingsSheet } from './components/SettingsSheet'
 import { IconSettings } from './components/icons'
-import { listMeetings, saveMeeting } from './lib/store'
+import { listMeetings, saveMeeting, setDemoLibrary } from './lib/store'
+import { SIGNED_OUT, currentAuth, signOut, type Auth } from './lib/session'
+import { NeedsAccount, SignIn } from './components/SignIn'
 import { onMeetingChange, processMeeting } from './lib/pipeline'
 import { prepareUpload } from './lib/convert'
 import type { MeetingSummary } from './lib/types'
@@ -37,6 +39,22 @@ export default function App() {
   const [converting, setConverting] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [settings, setSettings] = useState(false)
+  // undefined while checking the session; null = signed out.
+  const [auth, setAuth] = useState<Auth | undefined>(undefined)
+  const [needsAccount, setNeedsAccount] = useState(false)
+  const guest = auth?.kind === 'guest'
+
+  const applyAuth = useCallback(async (a: Auth) => {
+    await setDemoLibrary(a?.kind === 'guest')
+    setAuth(a)
+    setMeetings(await listMeetings())
+  }, [])
+  useEffect(() => {
+    void currentAuth().then(applyAuth)
+    const out = () => void applyAuth(null)
+    window.addEventListener(SIGNED_OUT, out)
+    return () => window.removeEventListener(SIGNED_OUT, out)
+  }, [applyAuth])
 
   useEffect(() => {
     const on = () => setRoute(parseRoute())
@@ -44,10 +62,7 @@ export default function App() {
     return () => window.removeEventListener('hashchange', on)
   }, [])
   const refresh = useCallback(() => void listMeetings().then(setMeetings), [])
-  useEffect(() => {
-    refresh()
-    return onMeetingChange(refresh)
-  }, [refresh])
+  useEffect(() => onMeetingChange(refresh), [refresh])
   useEffect(() => window.scrollTo(0, 0), [route])
 
   const stamp = () => `Meeting · ${new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
@@ -76,6 +91,7 @@ export default function App() {
   }
 
   const upload = async (file: File) => {
+    if (guest) return setNeedsAccount(true)
     setError('')
     setConverting(0)
     try {
@@ -87,6 +103,9 @@ export default function App() {
       setConverting(null)
     }
   }
+
+  if (auth === undefined) return <div className="min-h-dvh" />
+  if (auth === null) return <SignIn onAuth={(a) => void applyAuth(a)} />
 
   return (
     <div className="mx-auto min-h-dvh max-w-6xl px-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
@@ -104,8 +123,10 @@ export default function App() {
       </header>
 
       <main>
-        {route.name === 'home' && <Library meetings={meetings} onRecord={() => go('/record')} onUpload={upload} onOpen={(id) => go(`/m/${id}`)} />}
-        {route.name === 'record' && (
+        {route.name === 'home' && (
+          <Library meetings={meetings} demo={guest} onRecord={() => (guest ? setNeedsAccount(true) : go('/record'))} onUpload={upload} onOpen={(id) => go(`/m/${id}`)} />
+        )}
+        {route.name === 'record' && !guest && (
           <RecorderView
             onCancel={() => go('/')}
             onDone={(blob, durationSec) => {
@@ -129,7 +150,29 @@ export default function App() {
         </div>
       )}
       {pending && <ContextSheet durationSec={pending.durationSec} defaultTitle={pending.title} onSubmit={create} onDiscard={() => setPending(null)} />}
-      {settings && <SettingsSheet onClose={() => setSettings(false)} />}
+      {settings && (
+        <SettingsSheet
+          auth={auth}
+          onClose={() => setSettings(false)}
+          onSignOut={async () => {
+            setSettings(false)
+            await signOut()
+            go('/')
+            await applyAuth(null)
+          }}
+        />
+      )}
+      {needsAccount && (
+        <NeedsAccount
+          onClose={() => setNeedsAccount(false)}
+          onSignIn={async () => {
+            setNeedsAccount(false)
+            await signOut()
+            go('/')
+            await applyAuth(null)
+          }}
+        />
+      )}
     </div>
   )
 }

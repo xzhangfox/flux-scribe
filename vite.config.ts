@@ -11,7 +11,7 @@ function devApi(): Plugin {
       server.middlewares.use('/api', async (req, res) => {
         try {
           const name = (req.url || '').split('?')[0].replace(/^\/+/, '')
-          if (!/^[\w-]+$/.test(name)) {
+          if (!/^[\w-]+(\/[\w-]+)?$/.test(name) || name.startsWith('_')) {
             res.statusCode = 404
             return res.end()
           }

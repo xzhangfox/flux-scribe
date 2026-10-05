@@ -2,8 +2,9 @@ import { useEffect } from 'react'
 import { ThemePicker } from './ThemePicker'
 import { OtherApps } from './OtherApps'
 import { IconX } from './icons'
+import type { Auth } from '../lib/session'
 
-export function SettingsSheet({ onClose }: { onClose: () => void }) {
+export function SettingsSheet({ auth, onClose, onSignOut }: { auth: Auth; onClose: () => void; onSignOut: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)
@@ -16,6 +17,15 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
           <h2 className="text-lg font-bold">Settings</h2>
           <button onClick={onClose} aria-label="Close" className="rounded-full p-2 text-muted hover:bg-white/10 hover:text-white">
             <IconX className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="glass flex items-center justify-between gap-3 rounded-2xl px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted">{auth?.kind === 'user' ? 'Signed in' : 'Guest demo'}</p>
+            <p className="truncate text-sm font-semibold">{auth?.kind === 'user' ? auth.account.email : 'Read-only sample meeting'}</p>
+          </div>
+          <button onClick={onSignOut} className="shrink-0 rounded-full border border-white/10 px-4 py-2 text-xs font-bold transition hover:border-primary/50 hover:text-primary">
+            {auth?.kind === 'user' ? 'Sign out' : 'Sign in'}
           </button>
         </div>
         <ThemePicker />

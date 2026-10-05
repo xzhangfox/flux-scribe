@@ -3,7 +3,7 @@ import type { MeetingSummary } from '../lib/types'
 import { durationLabel } from '../lib/format'
 import { IconMic, IconUpload } from './icons'
 
-export function Library({ meetings, onRecord, onUpload, onOpen }: { meetings: MeetingSummary[] | null; onRecord: () => void; onUpload: (f: File) => void; onOpen: (id: string) => void }) {
+export function Library({ meetings, demo, onRecord, onUpload, onOpen }: { meetings: MeetingSummary[] | null; demo: boolean; onRecord: () => void; onUpload: (f: File) => void; onOpen: (id: string) => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
   return (
     <div className="space-y-10">
@@ -35,7 +35,12 @@ export function Library({ meetings, onRecord, onUpload, onOpen }: { meetings: Me
       </section>
 
       <section className="fade-up" style={{ animationDelay: '80ms' }}>
-        <h2 className="mb-3 px-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted">Your meetings</h2>
+        {demo && (
+          <p className="mb-4 rounded-2xl border border-primary/25 bg-primary/10 px-4 py-3 text-xs leading-relaxed">
+            <span className="font-bold text-primary">Guest demo.</span> Open the sample meeting to explore the transcript, minutes and Q&amp;A. Sign in with a Flux account to record your own.
+          </p>
+        )}
+        <h2 className="mb-3 px-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted">{demo ? 'Sample meeting' : 'Your meetings'}</h2>
         {meetings === null ? null : meetings.length === 0 ? (
           <div className="glass rounded-3xl px-6 py-10 text-center text-sm text-muted">Nothing here yet — your recordings will appear here, kept on this device.</div>
         ) : (
