@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, scryptSync, timingSafeEqual } from 'node:crypto'
 import { HttpError } from './gemini.js'
 
 // Who may spend the Gemini quota. Every AI endpoint calls requireUser()
@@ -89,16 +89,43 @@ interface FluxUser {
   name?: string
 }
 
+/** Credentials for reading Flux's users table as a server: once the Flux
+ *  database is locked down (Row Level Security), the anon key alone can't. */
+function serverBearer() {
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY) return process.env.SUPABASE_SERVICE_ROLE_KEY
+  const secret = process.env.SUPABASE_JWT_SECRET
+  if (!secret) return FLUX_SUPABASE_KEY
+  const now = Math.floor(Date.now() / 1000)
+  const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  const head = enc({ alg: 'HS256', typ: 'JWT' })
+  const body = enc({ role: 'service_role', iss: 'supabase', iat: now, exp: now + 300 })
+  return `${head}.${body}.${createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url')}`
+}
+
+/** Flux stores scrypt hashes ("scrypt$salt$hash"); older accounts may still
+ *  hold plain text until their next Flux sign-in upgrades it. */
+function passwordMatches(stored: string | undefined, password: string) {
+  if (!stored) return safeEqual(`\u0000no-user:${Math.random()}`, password)
+  if (stored.startsWith('scrypt$')) {
+    const [, salt, hash] = stored.split('$')
+    const got = scryptSync(password, Buffer.from(salt, 'base64'), 32)
+    const want = Buffer.from(hash, 'base64')
+    return got.length === want.length && timingSafeEqual(got, want)
+  }
+  return safeEqual(stored, password)
+}
+
 /** Checks a Flux email + password on the server. */
 export async function verifyFluxLogin(email: string, password: string) {
-  const res = await fetch(`${FLUX_SUPABASE_URL}/rest/v1/users?select=data&data->>email=eq.${encodeURIComponent(email.trim())}`, {
-    headers: { apikey: FLUX_SUPABASE_KEY, Authorization: `Bearer ${FLUX_SUPABASE_KEY}` },
+  const res = await fetch(`${FLUX_SUPABASE_URL}/rest/v1/users?select=id,data&data->>email=eq.${encodeURIComponent(email.trim())}`, {
+    headers: { apikey: FLUX_SUPABASE_KEY, Authorization: `Bearer ${serverBearer()}` },
   })
   if (!res.ok) throw new HttpError(502, 'The account service is unavailable — please try again.')
-  const rows = (await res.json()) as { data: FluxUser }[]
-  const user = rows.map((r) => r.data).find((u) => u && u.email === email.trim())
-  // Same work and the same answer whether the email exists or not.
-  const ok = safeEqual(user?.password ?? `\u0000no-user:${Math.random()}`, password)
+  const rows = (await res.json()) as { id: string; data: FluxUser }[]
+  const row = rows.find((r) => r.data?.email === email.trim())
+  const user = row ? { ...row.data, id: row.id } : undefined
+  // Same answer whether the email exists or not.
+  const ok = passwordMatches(user?.password, password)
   if (!user || !ok || user.id === FLUX_GUEST_ID) throw new HttpError(401, 'Email or password is incorrect.')
   if (!isAllowed(user.email)) throw new HttpError(403, "This account doesn't have access to Flux Scribe yet. You can explore the demo as a guest.")
   return { uid: user.id, email: user.email, name: user.name || user.email.split('@')[0] }
