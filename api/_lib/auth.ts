@@ -93,8 +93,12 @@ interface FluxUser {
  *  database is locked down (Row Level Security), the anon key alone can't. */
 function serverBearer() {
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) return process.env.SUPABASE_SERVICE_ROLE_KEY
-  const secret = process.env.SUPABASE_JWT_SECRET
-  if (!secret) return FLUX_SUPABASE_KEY
+  const secret = (process.env.SUPABASE_JWT_SECRET || '').trim().replace(/^["']|["']$/g, '')
+  // The anon key is signed with the project's JWT secret: only trust a
+  // secret that reproduces its signature (a wrong one would get every
+  // request rejected).
+  const [h, b, sig] = FLUX_SUPABASE_KEY.split('.')
+  if (!secret || createHmac('sha256', secret).update(`${h}.${b}`).digest('base64url') !== sig) return FLUX_SUPABASE_KEY
   const now = Math.floor(Date.now() / 1000)
   const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
   const head = enc({ alg: 'HS256', typ: 'JWT' })
