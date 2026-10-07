@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { ThemePicker } from './ThemePicker'
 import { OtherApps } from './OtherApps'
+import { ShareAppButton } from './ShareAppButton'
 import { IconX } from './icons'
 import type { Auth } from '../lib/session'
 
@@ -29,6 +30,7 @@ export function SettingsSheet({ auth, onClose, onSignOut }: { auth: Auth; onClos
           </button>
         </div>
         <ThemePicker />
+        <ShareAppButton />
         <OtherApps />
         <p className="text-xs leading-relaxed text-muted">
           Recordings and transcripts are stored only in this browser. Audio is sent to Google Gemini once, for transcription, and deleted from it straight after.
