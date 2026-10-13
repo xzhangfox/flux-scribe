@@ -1,10 +1,13 @@
 import { ThinkingLevel } from '@google/genai'
-import { HttpError, MODEL, client, handle, isMock, readJson } from './_lib/gemini.js'
+import { HttpError, MODEL, client, handle, isMock, readJson, usageOf } from './_lib/gemini.js'
 import { mockAnswer } from '../shared/demo-meeting.js'
 import { requireUser } from './_lib/auth.js'
 
 // The meeting assistant: answers strictly from this meeting's transcript,
-// citing the moments it draws on as [m:ss] so the app can link them.
+// citing the moments it draws on as [m:ss] so the app can link them. The
+// transcript leads the request unchanged from one question to the next, so
+// Gemini's implicit caching bills follow-up questions on it at the cached
+// rate.
 interface Body {
   transcript: string
   messages: { role: 'user' | 'assistant'; content: string }[]
@@ -35,5 +38,5 @@ ${transcript.slice(0, 600_000)}`,
     },
   })
   if (!response.text) throw new HttpError(502, 'The assistant returned an empty reply.')
-  return { reply: response.text }
+  return { reply: response.text, usage: usageOf(response) }
 })

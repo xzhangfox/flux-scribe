@@ -31,15 +31,16 @@ function silence(seconds: number) {
   return new Blob([buf], { type: 'audio/wav' })
 }
 
-export function demoMeeting(): Meeting {
+export function demoMeeting(): { meeting: Meeting; audio: Blob } {
   const t = mockTranscript()
   const durationSec = 100
-  return {
+  const audio = silence(durationSec)
+  const meeting: Meeting = {
     id: DEMO_ID,
     title: mockMinutes().title,
     createdAt: Date.now() - 2 * 3600 * 1000,
     durationSec,
-    audio: silence(durationSec),
+    audioBytes: audio.size,
     mimeType: 'audio/wav',
     context: 'Maya (PM), Leo (engineering), Priya (design)',
     status: 'ready',
@@ -49,6 +50,7 @@ export function demoMeeting(): Meeting {
     minutes: mockMinutes(),
     chat: [],
   }
+  return { meeting, audio }
 }
 
 export const demoAnswer = (question: string) => new Promise<string>((r) => setTimeout(() => r(mockAnswer(question)), 700))

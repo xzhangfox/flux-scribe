@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChatMessage, Meeting } from '../lib/types'
-import { clock, durationLabel, parseClock, speakerColor, speakerName, toMarkdown, transcriptText } from '../lib/format'
-import { getMeeting, updateMeeting, deleteMeeting } from '../lib/store'
-import { isRunning, onMeetingChange, processMeeting } from '../lib/pipeline'
+import type { ChatMessage, Meeting, Usage } from '../lib/types'
+import { bytesLabel, clock, durationLabel, parseClock, speakerColor, speakerName, toMarkdown, tokensLabel, transcriptText } from '../lib/format'
+import { getAudio, getMeeting, updateMeeting } from '../lib/store'
+import { etaSeconds, isRunning, liveStage, onLiveStage, onMeetingChange, processMeeting, removeMeeting, removeRecording } from '../lib/pipeline'
 import { ask } from '../lib/api'
-import { IconBack, IconCheck, IconCopy, IconDownload, IconEdit, IconPause, IconPlay, IconRetry, IconSearch, IconSend, IconSparkle, IconTrash } from './icons'
+import { ConfirmSheet } from './ConfirmSheet'
+import { IconBack, IconCheck, IconCopy, IconDownload, IconEdit, IconMore, IconPause, IconPlay, IconRetry, IconSearch, IconSend, IconSparkle, IconTrash, IconWave } from './icons'
 
 type Tab = 'minutes' | 'transcript' | 'ask'
 
@@ -14,8 +15,27 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
   const audio = useRef<HTMLAudioElement>(null)
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const url = useMemo(() => (m?.audio ? URL.createObjectURL(m.audio) : ''), [m?.audio])
-  useEffect(() => () => void (url && URL.revokeObjectURL(url)), [url])
+  const [url, setUrl] = useState('')
+  const [live, setLive] = useState(() => liveStage(id))
+  const [confirm, setConfirm] = useState<'delete' | 'audio' | null>(null)
+  const hasAudio = !!m?.audioBytes
+
+  // The recording, from its own store (only while it exists).
+  useEffect(() => {
+    if (!hasAudio) return setUrl('')
+    let alive = true
+    let made = ''
+    void getAudio(id).then((blob) => {
+      if (!alive || !blob) return
+      made = URL.createObjectURL(blob)
+      setUrl(made)
+    })
+    return () => {
+      alive = false
+      if (made) URL.revokeObjectURL(made)
+    }
+  }, [id, hasAudio])
+  useEffect(() => onLiveStage((changed) => changed === id && setLive(liveStage(id))), [id])
 
   useEffect(() => {
     let alive = true
@@ -33,14 +53,14 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
     if (m?.status === 'processing' && !isRunning(m.id)) void processMeeting(m.id)
   }, [m?.status, m?.id])
 
-  const save = async (patch: Partial<Meeting>) => {
+  const save = async (patch: Partial<Meeting> | ((cur: Meeting) => Partial<Meeting>)) => {
     const next = await updateMeeting(id, patch)
     if (next) setM(next)
   }
 
   const seek = (t: number) => {
     const a = audio.current
-    if (!a) return
+    if (!a || !url) return
     a.currentTime = t
     void a.play()
   }
@@ -53,9 +73,15 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
       </div>
     )
 
-  const ready = m.status === 'ready'
   const transcriptPanel = <Transcript m={m} time={time} onSeek={seek} />
-  const sidePanel = tab === 'ask' ? <Ask m={m} onSeek={seek} onChat={(chat) => save({ chat })} /> : <MinutesPanel m={m} onSeek={seek} onSave={save} />
+  const sidePanel =
+    tab === 'ask' ? (
+      <Ask m={m} onSeek={seek} onChat={(chat, u) => save((cur) => ({ chat, ...(u && { usage: { input: (cur.usage?.input || 0) + u.input, output: (cur.usage?.output || 0) + u.output } }) }))} />
+    ) : (
+      <MinutesPanel m={m} onSeek={seek} onSave={save} />
+    )
+  // Retrying needs the recording, unless only the minutes are missing.
+  const canRetry = hasAudio || (m.segments.length > 0 && !m.job)
 
   return (
     <div className="fade-up pb-32">
@@ -64,23 +90,26 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
           <IconBack className="h-5 w-5" />
         </button>
         <EditableTitle value={m.title} onChange={(title) => save({ title })} />
-        {ready && <ExportMenu m={m} onDelete={async () => { await deleteMeeting(m.id); onBack() }} />}
+        <MeetingMenu m={m} onRemoveAudio={() => setConfirm('audio')} onDelete={() => setConfirm('delete')} />
       </div>
       <p className="-mt-2 mb-5 pl-[52px] font-mono text-[11px] text-muted">
         {new Date(m.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · {durationLabel(m.durationSec)}
         {m.language ? ` · ${m.language.toUpperCase()}` : ''}
       </p>
 
-      {m.status === 'processing' && <Processing stage={m.stage} />}
+      {m.status === 'processing' && <Processing m={m} live={live} />}
       {m.status === 'error' && (
         <div className="glass mb-6 rounded-3xl p-6 text-center">
           <p className="font-semibold text-danger">Processing stopped</p>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted">{m.error}</p>
+          {m.job && m.job.done > 0 && <p className="mt-2 text-xs text-muted">{m.job.done} of {m.job.cuts.length - 1} parts are done and kept — trying again continues from part {m.job.done + 1}.</p>}
           <div className="mt-4 flex justify-center gap-3">
-            <button onClick={() => processMeeting(m.id)} className="flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-black active:scale-95">
-              <IconRetry className="h-4 w-4" /> Try again
-            </button>
-            <button onClick={async () => { await deleteMeeting(m.id); onBack() }} className="glass rounded-full px-5 py-2.5 text-sm font-semibold text-muted hover:text-danger">Delete</button>
+            {canRetry && (
+              <button onClick={() => processMeeting(m.id)} className="flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-black active:scale-95">
+                <IconRetry className="h-4 w-4" /> Try again
+              </button>
+            )}
+            <button onClick={() => setConfirm('delete')} className="glass rounded-full px-5 py-2.5 text-sm font-semibold text-muted hover:text-danger">Delete</button>
           </div>
         </div>
       )}
@@ -120,7 +149,41 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
         </>
       )}
 
+      {m.audioRemoved && (
+        <p className="mt-6 flex items-center justify-center gap-2 text-center text-xs text-muted">
+          <IconWave className="h-4 w-4" /> The recording was removed to save space — transcript and minutes are kept.
+        </p>
+      )}
+
+      {confirm === 'delete' && (
+        <ConfirmSheet
+          title="Delete this meeting?"
+          body={`Its ${hasAudio ? 'recording, ' : ''}transcript, minutes and chat will be removed from this device.${m.status === 'processing' ? ' Processing stops.' : ''} This can't be undone.`}
+          action="Delete"
+          onCancel={() => setConfirm(null)}
+          onConfirm={async () => {
+            setConfirm(null)
+            await removeMeeting(m.id)
+            onBack()
+          }}
+        />
+      )}
+      {confirm === 'audio' && (
+        <ConfirmSheet
+          title="Remove the recording?"
+          body={`Frees ${bytesLabel(m.audioBytes)}. The transcript, minutes and chat stay; you just can't play the audio or transcribe it again.`}
+          action="Remove"
+          onCancel={() => setConfirm(null)}
+          onConfirm={async () => {
+            setConfirm(null)
+            audio.current?.pause()
+            await removeRecording(m.id)
+          }}
+        />
+      )}
+
       {/* Player, pinned to the bottom. */}
+      {url && (
       <div className="fixed inset-x-0 bottom-0 z-30 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="glass-strong mx-auto flex max-w-3xl items-center gap-3 rounded-[22px] px-3 py-2.5">
           <button
@@ -149,6 +212,7 @@ export function MeetingView({ id, onBack }: { id: string; onBack: () => void }) 
           <audio ref={audio} src={url} preload="metadata" onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />
         </div>
       </div>
+      )}
     </div>
   )
 }
@@ -176,25 +240,45 @@ function EditableTitle({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
-const STAGES = ['Preparing audio', 'Uploading', 'Transcribing & separating speakers', 'Writing the minutes']
-function Processing({ stage = 'Preparing audio' }: { stage?: string }) {
-  const at = Math.max(0, STAGES.findIndex((s) => stage.startsWith(s)))
+function Processing({ m, live }: { m: Meeting; live?: string }) {
+  const stage = live || m.stage || 'Preparing audio'
+  const parts = m.job ? m.job.cuts.length - 1 : 1
+  const done = m.job?.done ?? 0
+  const writing = stage.startsWith('Writing')
+  const at = writing ? 2 : stage.startsWith('Preparing') ? 0 : 1
+  const eta = etaSeconds(m)
+  const steps = ['Preparing audio', parts > 1 ? `Transcribing · ${parts} parts` : 'Transcribing & speakers', 'Writing the minutes']
   return (
     <div className="glass mb-6 rounded-3xl p-6">
       <div className="flex items-center gap-4">
-        <span className="relative grid h-12 w-12 place-items-center">
+        <span className="relative grid h-12 w-12 shrink-0 place-items-center">
           <span className="absolute inset-0 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
           <IconSparkle className="h-5 w-5 text-primary" />
         </span>
-        <div>
+        <div className="min-w-0">
           <p className="font-semibold">{stage}…</p>
-          <p className="text-xs text-muted">Usually under a minute for a short meeting; longer recordings take a few.</p>
+          <p className="text-xs text-muted">
+            {eta !== null && !writing
+              ? `About ${Math.max(1, Math.round(eta / 60))} min left. `
+              : parts > 1
+                ? 'A long recording goes part by part — each one is saved as it finishes. '
+                : 'Usually under a minute for a short meeting; longer recordings take a few. '}
+            {parts > 1 && !writing && 'You can leave this page; on a phone it continues when you come back.'}
+          </p>
         </div>
       </div>
-      <ol className="mt-5 grid grid-cols-4 gap-2">
-        {STAGES.map((s, i) => (
+      <ol className="mt-5 grid grid-cols-3 gap-2">
+        {steps.map((s, i) => (
           <li key={s} className="space-y-1.5">
-            <div className={`h-1 rounded-full ${i < at ? 'bg-primary' : i === at ? 'animate-pulse bg-primary/70' : 'bg-white/10'}`} />
+            {i === 1 && parts > 1 ? (
+              <div className="flex h-1 gap-0.5">
+                {Array.from({ length: parts }, (_, k) => (
+                  <div key={k} className={`h-1 flex-1 rounded-full ${k < done || at > 1 ? 'bg-primary' : k === done && at === 1 ? 'animate-pulse bg-primary/70' : 'bg-white/10'}`} />
+                ))}
+              </div>
+            ) : (
+              <div className={`h-1 rounded-full ${i < at ? 'bg-primary' : i === at ? 'animate-pulse bg-primary/70' : 'bg-white/10'}`} />
+            )}
             <p className={`text-[10px] leading-tight ${i <= at ? 'text-white' : 'text-muted'}`}>{s}</p>
           </li>
         ))}
@@ -323,7 +407,7 @@ function MinutesPanel({ m, onSeek, onSave }: { m: Meeting; onSeek: (t: number) =
   if (!mm)
     return (
       <div className="glass rounded-3xl p-6 text-center text-sm text-muted">
-        {m.status === 'processing' ? 'Writing the minutes…' : 'No minutes yet.'}
+        {m.status === 'processing' ? (m.job ? 'The minutes are written once the whole recording is transcribed.' : 'Writing the minutes…') : 'No minutes yet.'}
       </div>
     )
   return (
@@ -409,7 +493,7 @@ function Cited({ text, onSeek }: { text: string; onSeek: (t: number) => void }) 
   )
 }
 
-function Ask({ m, onSeek, onChat }: { m: Meeting; onSeek: (t: number) => void; onChat: (c: ChatMessage[]) => void }) {
+function Ask({ m, onSeek, onChat }: { m: Meeting; onSeek: (t: number) => void; onChat: (c: ChatMessage[], usage?: Usage) => void }) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -428,8 +512,8 @@ function Ask({ m, onSeek, onChat }: { m: Meeting; onSeek: (t: number) => void; o
     setBusy(true)
     setErr('')
     try {
-      const reply = await ask(transcriptText(m), next)
-      onChat([...next, { role: 'assistant', content: reply }])
+      const { reply, usage } = await ask(transcriptText(m), next)
+      onChat([...next, { role: 'assistant', content: reply }], usage)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -477,36 +561,63 @@ function Ask({ m, onSeek, onChat }: { m: Meeting; onSeek: (t: number) => void; o
   )
 }
 
-function ExportMenu({ m, onDelete }: { m: Meeting; onDelete: () => void }) {
+function MeetingMenu({ m, onRemoveAudio, onDelete }: { m: Meeting; onRemoveAudio: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
   const md = () => toMarkdown(m)
+  const item = 'flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left hover:bg-white/5'
+  useEffect(() => {
+    if (!open) return
+    const close = (e: PointerEvent) => !box.current?.contains(e.target as Node) && setOpen(false)
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [open])
+  const used = (m.usage?.input || 0) + (m.usage?.output || 0)
   return (
-    <div className="relative">
-      <button onClick={() => setOpen((o) => !o)} aria-label="Export" className="glass grid h-10 w-10 place-items-center rounded-full transition hover:border-primary/50">
-        <IconDownload className="h-4.5 w-4.5" />
+    <div className="relative" ref={box}>
+      <button onClick={() => setOpen((o) => !o)} aria-label="Meeting options" aria-expanded={open} className="glass grid h-10 w-10 place-items-center rounded-full transition hover:border-primary/50">
+        <IconMore className="h-5 w-5" />
       </button>
       {open && (
-        <div className="glass-strong absolute right-0 top-12 z-40 w-52 overflow-hidden rounded-2xl p-1.5 text-sm" onMouseLeave={() => setOpen(false)}>
-          <button className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 hover:bg-white/5" onClick={async () => { await navigator.clipboard.writeText(md()); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>
-            <IconCopy className="h-4 w-4 text-primary" /> {copied ? 'Copied!' : 'Copy as Markdown'}
-          </button>
-          <button
-            className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 hover:bg-white/5"
-            onClick={() => {
-              const a = document.createElement('a')
-              a.href = URL.createObjectURL(new Blob([md()], { type: 'text/markdown' }))
-              a.download = `${m.title.replace(/[^\p{L}\p{N}]+/gu, '-')}.md`
-              a.click()
-              URL.revokeObjectURL(a.href)
-              setOpen(false)
-            }}
-          >
-            <IconDownload className="h-4 w-4 text-primary" /> Download .md
-          </button>
-          <button className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-danger hover:bg-danger/10" onClick={() => confirm('Delete this meeting and its recording?') && onDelete()}>
+        <div role="menu" aria-label="Meeting options" className="glass-strong absolute right-0 top-12 z-40 w-64 overflow-hidden rounded-2xl bg-[rgba(10,10,12,0.94)] p-1.5 text-sm shadow-2xl">
+          {m.segments.length > 0 && (
+            <>
+              <button className={item} onClick={async () => { await navigator.clipboard.writeText(md()); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>
+                <IconCopy className="h-4 w-4 text-primary" /> {copied ? 'Copied!' : 'Copy as Markdown'}
+              </button>
+              <button
+                className={item}
+                onClick={() => {
+                  const a = document.createElement('a')
+                  a.href = URL.createObjectURL(new Blob([md()], { type: 'text/markdown' }))
+                  a.download = `${m.title.replace(/[^\p{L}\p{N}]+/gu, '-')}.md`
+                  a.click()
+                  URL.revokeObjectURL(a.href)
+                  setOpen(false)
+                }}
+              >
+                <IconDownload className="h-4 w-4 text-primary" /> Download .md
+              </button>
+            </>
+          )}
+          {m.audioBytes > 0 && m.status === 'ready' && (
+            <button className={item} onClick={() => { setOpen(false); onRemoveAudio() }}>
+              <IconWave className="h-4 w-4 text-primary" />
+              <span className="flex-1">Remove recording</span>
+              <span className="font-mono text-[10px] text-muted">{bytesLabel(m.audioBytes)}</span>
+            </button>
+          )}
+          <button className={`${item} text-danger hover:bg-danger/10`} onClick={() => { setOpen(false); onDelete() }}>
             <IconTrash className="h-4 w-4" /> Delete meeting
           </button>
+          {used > 0 && (
+            <p className="mt-1 border-t border-white/10 px-3 pb-1.5 pt-2.5 font-mono text-[10px] leading-relaxed text-muted">
+              AI usage · {tokensLabel(used)} tokens
+              <br />
+              {tokensLabel(m.usage!.input)} in · {tokensLabel(m.usage!.output)} out
+            </p>
+          )}
         </div>
       )}
     </div>

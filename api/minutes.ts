@@ -1,5 +1,5 @@
 import { ThinkingLevel, Type } from '@google/genai'
-import { HttpError, MODEL, client, handle, isMock, parseModelJson, readJson } from './_lib/gemini.js'
+import { HttpError, MODEL, client, handle, isMock, parseModelJson, readJson, usageOf } from './_lib/gemini.js'
 import { mockMinutes } from '../shared/demo-meeting.js'
 import { requireUser } from './_lib/auth.js'
 
@@ -36,7 +36,7 @@ export const POST = handle(async (req) => {
   requireUser(req)
   const { transcript } = await readJson<{ transcript: string }>(req)
   if (!transcript?.trim()) throw new HttpError(400, 'Transcript is empty.')
-  if (isMock()) return mockMinutes()
+  if (isMock()) return { ...mockMinutes(), usage: { input: 0, output: 0 } }
   const response = await client().models.generateContent({
     model: MODEL,
     contents: [{ role: 'user', parts: [{ text: transcript.slice(0, 600_000) }] }],
@@ -49,9 +49,10 @@ Write in the transcript's main language. Be factual — include only what was ac
       responseMimeType: 'application/json',
       responseSchema: SCHEMA,
       temperature: 0.2,
-      maxOutputTokens: 8192,
+      // (room for a three-hour meeting's minutes, thinking included)
+      maxOutputTokens: 16384,
       thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
     },
   })
-  return parseModelJson(response.text)
+  return { ...parseModelJson<object>(response.text), usage: usageOf(response) }
 })

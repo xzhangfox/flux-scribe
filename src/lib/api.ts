@@ -1,20 +1,38 @@
-import type { ChatMessage, Minutes, Segment, Speaker } from './types'
+import type { ChatMessage, Minutes, Segment, Speaker, Usage } from './types'
 import { SIGNED_OUT, isGuest } from './session'
 import { demoAnswer } from './demo'
 
 export const GUEST_BLOCKED = 'Sign in with your Flux account to transcribe your own recordings.'
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+/** An API failure; `status` 0 means the network itself failed. */
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+/** Worth trying again: the network, rate limits, a busy or failed model. */
+export const isTransient = (e: unknown) => e instanceof ApiError && (e.status === 0 || e.status === 408 || e.status === 429 || e.status >= 500)
+
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   // Guests never reach the AI endpoints (the server would refuse anyway).
   if (isGuest()) throw new Error(GUEST_BLOCKED)
-  const res = await fetch(`/api/${path}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  let res: Response
+  try {
+    res = await fetch(`/api/${path}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
+  } catch (e) {
+    if (signal?.aborted) throw e
+    throw new ApiError('Connection lost — check your network.', 0)
+  }
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT))
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`)
+  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status}).`, res.status)
   return data as T
 }
 
-function toBase64(blob: Blob): Promise<string> {
+export function toBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader()
     r.onload = () => resolve(String(r.result).split(',')[1] || '')
@@ -27,24 +45,29 @@ function toBase64(blob: Blob): Promise<string> {
 // from the browser to the Gemini Files API through a one-time upload URL
 // the server opened (serverless request bodies cap out around 4.5 MB).
 const INLINE_MAX = 3 * 1024 * 1024
+const BODY_MAX = 4 * 1024 * 1024
 
-function uploadDirect(url: string, blob: Blob, onProgress: (p: number) => void) {
+function uploadDirect(url: string, blob: Blob, onProgress: (p: number) => void, signal?: AbortSignal) {
   return new Promise<{ name: string; uri: string; mimeType: string }>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
+    const abort = () => xhr.abort()
+    signal?.addEventListener('abort', abort, { once: true })
     xhr.open('POST', url)
     xhr.setRequestHeader('X-Goog-Upload-Offset', '0')
     xhr.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize')
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total)
     xhr.onload = () => {
+      signal?.removeEventListener('abort', abort)
       try {
         const f = JSON.parse(xhr.responseText).file
         if (xhr.status >= 200 && xhr.status < 300 && f?.uri) resolve({ name: f.name, uri: f.uri, mimeType: f.mimeType })
-        else reject(new Error(`Upload failed (${xhr.status}).`))
+        else reject(new ApiError(`Upload failed (${xhr.status}).`, xhr.status || 0))
       } catch {
-        reject(new Error(`Upload failed (${xhr.status}).`))
+        reject(new ApiError(`Upload failed (${xhr.status}).`, xhr.status || 0))
       }
     }
-    xhr.onerror = () => reject(new Error('Upload failed — check your connection and try again.'))
+    xhr.onerror = () => reject(new ApiError('Upload failed — check your connection and try again.', 0))
+    xhr.onabort = () => reject(new DOMException('Cancelled', 'AbortError'))
     xhr.send(blob)
   })
 }
@@ -54,30 +77,47 @@ export interface TranscriptResult {
   speakers: Speaker[]
   segments: Segment[]
   truncated: boolean
+  usage?: Usage
 }
 
-export async function transcribe(
-  blob: Blob,
-  mimeType: string,
-  opts: { context: string; title: string },
-  onStage: (stage: 'uploading' | 'transcribing', progress?: number) => void,
-): Promise<TranscriptResult> {
-  if (blob.size <= INLINE_MAX) {
-    onStage('uploading', 0)
+export interface VoiceSample {
+  speaker: string
+  name: string
+  blob: Blob
+}
+
+export interface TranscribeOptions {
+  context: string
+  title: string
+  part?: { index: number; total: number; offset: number }
+  speakers?: Speaker[]
+  refs?: VoiceSample[]
+  previous?: string[]
+  signal?: AbortSignal
+}
+
+export async function transcribe(blob: Blob, mimeType: string, opts: TranscribeOptions, onStage: (stage: 'uploading' | 'transcribing', progress?: number) => void): Promise<TranscriptResult> {
+  const refs = await Promise.all((opts.refs || []).map(async (r) => ({ speaker: r.speaker, name: r.name, data: await toBase64(r.blob), mimeType: r.blob.type || mimeType })))
+  const refBytes = refs.reduce((n, r) => n + r.data.length, 0)
+  const extra = { context: opts.context, part: opts.part, speakers: opts.speakers, refs, previous: opts.previous }
+  onStage('uploading', 0)
+  if (blob.size <= INLINE_MAX && blob.size * 1.37 + refBytes < BODY_MAX) {
     const data = await toBase64(blob)
     onStage('transcribing')
-    return post('transcribe', { inline: { data, mimeType }, context: opts.context })
+    return post('transcribe', { inline: { data, mimeType }, ...extra }, opts.signal)
   }
-  onStage('uploading', 0)
-  const { uploadUrl } = await post<{ uploadUrl: string }>('upload-url', { mimeType, size: blob.size, displayName: opts.title })
+  const { uploadUrl } = await post<{ uploadUrl: string }>('upload-url', { mimeType, size: blob.size, displayName: opts.title }, opts.signal)
   const file = uploadUrl.startsWith('mock://')
     ? { name: 'files/mock', uri: 'mock', mimeType }
-    : await uploadDirect(uploadUrl, blob, (p) => onStage('uploading', p))
+    : await uploadDirect(uploadUrl, blob, (p) => onStage('uploading', p), opts.signal)
   onStage('transcribing')
-  return post('transcribe', { file, context: opts.context })
+  return post('transcribe', { file, ...extra }, opts.signal)
 }
 
-export const writeMinutes = (transcript: string) => post<Minutes>('minutes', { transcript })
+export async function writeMinutes(transcript: string, signal?: AbortSignal): Promise<{ minutes: Minutes; usage?: Usage }> {
+  const { usage, ...minutes } = await post<Minutes & { usage?: Usage }>('minutes', { transcript }, signal)
+  return { minutes, usage }
+}
 
-export const ask = (transcript: string, messages: ChatMessage[]) =>
-  isGuest() ? demoAnswer(messages[messages.length - 1]?.content ?? '') : post<{ reply: string }>('ask', { transcript, messages }).then((r) => r.reply)
+export const ask = (transcript: string, messages: ChatMessage[]): Promise<{ reply: string; usage?: Usage }> =>
+  isGuest() ? demoAnswer(messages[messages.length - 1]?.content ?? '').then((reply) => ({ reply })) : post<{ reply: string; usage?: Usage }>('ask', { transcript, messages })

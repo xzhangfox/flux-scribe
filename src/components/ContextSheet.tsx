@@ -7,6 +7,8 @@ import { IconSparkle } from './icons'
 export function ContextSheet({ durationSec, defaultTitle, onSubmit, onDiscard }: { durationSec: number; defaultTitle: string; onSubmit: (title: string, context: string) => void; onDiscard: () => void }) {
   const [title, setTitle] = useState(defaultTitle)
   const [context, setContext] = useState('')
+  // (as the pipeline splits it: ~15-minute parts past 20 minutes)
+  const parts = durationSec > 20 * 60 ? Math.max(2, Math.round(durationSec / (15 * 60))) : 1
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal aria-label="Before transcribing">
       <form
@@ -18,7 +20,10 @@ export function ContextSheet({ durationSec, defaultTitle, onSubmit, onDiscard }:
       >
         <div>
           <h2 className="text-lg font-bold">Ready to transcribe</h2>
-          <p className="mt-1 text-sm text-muted">{durationLabel(durationSec)} of audio.</p>
+          <p className="mt-1 text-sm text-muted">
+            {durationLabel(durationSec)} of audio.
+            {parts > 1 && ` A long one: it's transcribed in ${parts} parts, roughly ${Math.max(2, Math.round(parts * 0.7))}–${Math.round(parts * 1.2) + 1} min in all. Each part is saved as it finishes.`}
+          </p>
         </div>
         <label className="block">
           <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted">Title</span>

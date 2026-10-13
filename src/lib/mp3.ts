@@ -9,7 +9,7 @@ const BLOCK = 1152
 
 export class Mp3Writer {
   private enc = new Mp3Encoder(1, SAMPLE_RATE, KBPS)
-  private chunks: Uint8Array[] = []
+  private out: Uint8Array[] = []
   private pending = new Int16Array(0)
 
   /** Appends mono float samples (-1..1) at SAMPLE_RATE. */
@@ -23,19 +23,34 @@ export class Mp3Writer {
     const whole = pcm.length - (pcm.length % BLOCK)
     for (let i = 0; i < whole; i += BLOCK) {
       const out = this.enc.encodeBuffer(pcm.subarray(i, i + BLOCK))
-      if (out.length) this.chunks.push(new Uint8Array(out))
+      if (out.length) this.out.push(new Uint8Array(out))
     }
     this.pending = pcm.slice(whole)
   }
 
-  finish(): Blob {
+  /** The MP3 bytes made since the last drain (the stream so far, in order). */
+  drain(): Uint8Array {
+    const total = this.out.reduce((n, c) => n + c.length, 0)
+    const bytes = new Uint8Array(total)
+    let p = 0
+    for (const c of this.out) {
+      bytes.set(c, p)
+      p += c.length
+    }
+    this.out = []
+    return bytes
+  }
+
+  /** Encodes what's left and ends the stream; returns the last bytes. */
+  end(): Uint8Array {
     if (this.pending.length) {
       const out = this.enc.encodeBuffer(this.pending)
-      if (out.length) this.chunks.push(new Uint8Array(out))
+      if (out.length) this.out.push(new Uint8Array(out))
+      this.pending = new Int16Array(0)
     }
     const tail = this.enc.flush()
-    if (tail.length) this.chunks.push(new Uint8Array(tail))
-    return new Blob(this.chunks as BlobPart[], { type: 'audio/mpeg' })
+    if (tail.length) this.out.push(new Uint8Array(tail))
+    return this.drain()
   }
 }
 

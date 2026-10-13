@@ -21,6 +21,14 @@ export function durationLabel(sec: number) {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
 }
 
+export function bytesLabel(n: number) {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`
+  return `${(n / 1024 ** 3).toFixed(1)} GB`
+}
+
+export const tokensLabel = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
+
 // Identity colours for speakers, in a fixed order (never cycled by rank):
 // distinct hues that read on all four dark themes. Names are always shown
 // beside them, so identity is never colour alone.

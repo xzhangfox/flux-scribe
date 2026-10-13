@@ -31,6 +31,29 @@ export interface ChatMessage {
   content: string
 }
 
+/** Gemini tokens spent on a meeting, all calls together. */
+export interface Usage {
+  input: number
+  output: number
+}
+
+/** A few seconds of one speaker's voice (meeting time), sent with each later
+ *  part of a long recording so the same voice keeps the same label. */
+export interface VoiceRef {
+  speaker: string
+  start: number
+  end: number
+}
+
+/** Transcription of a long recording, part by part. Saved after every part,
+ *  so an interruption only ever costs the part that was in flight. */
+export interface Job {
+  /** Part k spans cuts[k]..cuts[k + 1] seconds. */
+  cuts: number[]
+  done: number
+  refs: VoiceRef[]
+}
+
 export type MeetingStatus = 'processing' | 'ready' | 'error'
 
 export interface Meeting {
@@ -38,7 +61,10 @@ export interface Meeting {
   title: string
   createdAt: number
   durationSec: number
-  audio: Blob
+  /** The recording lives in its own store (see store.ts); this is its size,
+   *  0 once the user has removed it to free space. */
+  audioBytes: number
+  audioRemoved?: boolean
   mimeType: string
   /** User-supplied context (participants, topic) passed to transcription. */
   context: string
@@ -51,6 +77,8 @@ export interface Meeting {
   minutes?: Minutes
   chat: ChatMessage[]
   truncated?: boolean
+  job?: Job
+  usage?: Usage
 }
 
-export type MeetingSummary = Pick<Meeting, 'id' | 'title' | 'createdAt' | 'durationSec' | 'status'> & { speakerCount: number; summary?: string }
+export type MeetingSummary = Pick<Meeting, 'id' | 'title' | 'createdAt' | 'durationSec' | 'status' | 'stage' | 'audioBytes'> & { speakerCount: number; summary?: string }

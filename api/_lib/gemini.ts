@@ -57,6 +57,13 @@ export function parseModelJson<T>(text: string | undefined): T {
   }
 }
 
+/** Tokens a call used, for the meeting's running total. Thinking counts as
+ *  output (it's billed as such). */
+export function usageOf(r: { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }) {
+  const u = r.usageMetadata || {}
+  return { input: u.promptTokenCount || 0, output: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) }
+}
+
 export function clock(sec: number) {
   const s = Math.max(0, Math.round(sec))
   const h = Math.floor(s / 3600)
