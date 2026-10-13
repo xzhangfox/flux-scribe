@@ -574,13 +574,15 @@ function MeetingMenu({ m, onRemoveAudio, onDelete }: { m: Meeting; onRemoveAudio
     return () => window.removeEventListener('pointerdown', close)
   }, [open])
   const used = (m.usage?.input || 0) + (m.usage?.output || 0)
+  // The list's background is near-opaque inline: it opens over the transcript
+  // and progress card (and .glass-strong would win over a utility class).
   return (
     <div className="relative" ref={box}>
       <button onClick={() => setOpen((o) => !o)} aria-label="Meeting options" aria-expanded={open} className="glass grid h-10 w-10 place-items-center rounded-full transition hover:border-primary/50">
         <IconMore className="h-5 w-5" />
       </button>
       {open && (
-        <div role="menu" aria-label="Meeting options" className="glass-strong absolute right-0 top-12 z-40 w-64 overflow-hidden rounded-2xl bg-[rgba(10,10,12,0.94)] p-1.5 text-sm shadow-2xl">
+        <div role="menu" aria-label="Meeting options" style={{ background: 'rgba(10, 10, 12, 0.94)' }} className="glass-strong absolute right-0 top-12 z-40 w-64 overflow-hidden rounded-2xl p-1.5 text-sm shadow-2xl">
           {m.segments.length > 0 && (
             <>
               <button className={item} onClick={async () => { await navigator.clipboard.writeText(md()); setCopied(true); setTimeout(() => setCopied(false), 1500) }}>
