@@ -2,14 +2,16 @@ import { FileState, ThinkingLevel, Type, createPartFromUri, type Part } from '@g
 import { HttpError, MODEL, clock, client, handle, isMock, parseModelJson, readJson, usageOf } from './_lib/gemini.js'
 import { mockTranscript } from '../shared/demo-meeting.js'
 import { requireUser } from './_lib/auth.js'
+import { loopStart, salvage, type RawTranscript } from './_lib/salvage.js'
 
-// Transcription with speaker separation. A recording up to ~20 minutes goes
-// in one pass. A longer one comes part by part (~15 minutes each, cut at
-// pauses by the app), and every part after the first carries a few seconds
-// of each voice already heard, labelled — so the same person keeps the same
-// label from the first minute to the third hour. Each part is a short call
-// with a small answer: no output limit or timeout to hit, and a failure
-// costs one part, not the meeting. Accuracy also comes from structured
+// Transcription with speaker separation. A short recording goes in one
+// pass. A longer one comes part by part (~10 minutes each, cut at pauses by
+// the app, small enough to ride inside the request), and every part after
+// the first carries a few seconds of each voice already heard, labelled —
+// so the same person keeps the same label from the first minute to the
+// third hour. Each part is a short call with a small answer, and a failure
+// costs one part, not the meeting; an answer that still gets cut off keeps
+// what it has and the app sends the rest again. Accuracy also comes from structured
 // output, temperature 0, a little thinking for the diarization, the end of
 // the previous part for continuity, and optional user context
 // (participant names, topic, jargon).
@@ -163,9 +165,25 @@ export const POST = handle(async (req) => {
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       },
     })
-    const out = parseModelJson<{ language: string; speakers: { id: string; name: string }[]; segments: { speaker: string; start: number; end: number; text: string }[] }>(response.text)
-    const segments = (out.segments || [])
-      .filter((s) => s && typeof s.text === 'string' && s.text.trim())
+    // A cut-off answer keeps its whole segments, and a loop is dropped from
+    // where it starts; `truncated` then tells the app to send the rest again.
+    let truncated = response.candidates?.[0]?.finishReason === 'MAX_TOKENS'
+    let out: RawTranscript
+    try {
+      out = parseModelJson<RawTranscript>(response.text)
+    } catch (err) {
+      const saved = salvage(response.text || '')
+      if (!saved) throw err
+      out = saved
+      truncated = true
+    }
+    let raw = (out.segments || []).filter((s) => s && typeof s.text === 'string' && s.text.trim())
+    const loop = loopStart(raw)
+    if (loop >= 0) {
+      raw = raw.slice(0, loop + 1)
+      truncated = true
+    }
+    const segments = raw
       .map((s) => ({ speaker: String(s.speaker || 'S1'), start: Math.max(0, Number(s.start) || 0), end: Math.max(0, Number(s.end) || 0), text: s.text.trim() }))
       .sort((a, b) => a.start - b.start)
     // Every label used in the transcript gets a speaker entry.
@@ -175,7 +193,7 @@ export const POST = handle(async (req) => {
       language: out.language || '',
       speakers: ids.map((id) => ({ id, name: named.get(id) || '' })),
       segments,
-      truncated: response.candidates?.[0]?.finishReason === 'MAX_TOKENS',
+      truncated,
       usage: usageOf(response),
     }
   } finally {

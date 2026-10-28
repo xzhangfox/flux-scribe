@@ -15,9 +15,15 @@ export const POST = handle(async (req) => {
   if (!Number.isFinite(size) || size <= 0 || size > MAX_BYTES) throw new HttpError(400, 'Audio must be between 1 byte and 400 MB.')
   if (isMock()) return { uploadUrl: 'mock://upload' }
   client() // validates the key is configured
+  // The browser sends the bytes to the session URL from this page. Google's
+  // upload server answers a session's cross-origin requests only for the
+  // origin it was opened with, and a session opened with none refuses the
+  // browser's upload as a CORS error — so open it for the page's origin.
+  const origin = req.headers.get('origin')
   const res = await fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
     method: 'POST',
     headers: {
+      ...(origin ? { Origin: origin } : {}),
       'x-goog-api-key': process.env.GEMINI_API_KEY!,
       'X-Goog-Upload-Protocol': 'resumable',
       'X-Goog-Upload-Command': 'start',

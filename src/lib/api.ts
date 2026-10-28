@@ -28,7 +28,9 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
   }
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT))
-  if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status}).`, res.status)
+  // (the platform's own error pages — a time limit, a body too large — aren't JSON)
+  const plain = res.status === 504 ? 'The server took too long to answer.' : res.status === 413 ? 'This recording part was too large to send.' : `Request failed (${res.status}).`
+  if (!res.ok) throw new ApiError(data.error || plain, res.status)
   return data as T
 }
 
@@ -44,8 +46,14 @@ export function toBase64(blob: Blob): Promise<string> {
 // Small recordings ride inside the request; anything bigger goes straight
 // from the browser to the Gemini Files API through a one-time upload URL
 // the server opened (serverless request bodies cap out around 4.5 MB).
+// Long recordings are cut into parts small enough to ride inline (see
+// pipeline.ts), so they never need the upload at all.
 const INLINE_MAX = 3 * 1024 * 1024
 const BODY_MAX = 4 * 1024 * 1024
+const B64 = 1.37 // base64, plus the rest of the JSON
+
+/** Bytes of audio that can ride inline next to `refBytes` of voice samples. */
+export const inlineRoom = (refBytes = 0) => Math.min(INLINE_MAX, (BODY_MAX - refBytes * B64) / B64)
 
 function uploadDirect(url: string, blob: Blob, onProgress: (p: number) => void, signal?: AbortSignal) {
   return new Promise<{ name: string; uri: string; mimeType: string }>((resolve, reject) => {
@@ -101,7 +109,7 @@ export async function transcribe(blob: Blob, mimeType: string, opts: TranscribeO
   const refBytes = refs.reduce((n, r) => n + r.data.length, 0)
   const extra = { context: opts.context, part: opts.part, speakers: opts.speakers, refs, previous: opts.previous }
   onStage('uploading', 0)
-  if (blob.size <= INLINE_MAX && blob.size * 1.37 + refBytes < BODY_MAX) {
+  if (blob.size <= INLINE_MAX && blob.size * B64 + refBytes < BODY_MAX) {
     const data = await toBase64(blob)
     onStage('transcribing')
     return post('transcribe', { inline: { data, mimeType }, ...extra }, opts.signal)

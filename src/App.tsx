@@ -76,7 +76,11 @@ export default function App() {
   }, [])
   const refresh = useCallback(() => void listMeetings().then(setMeetings), [])
   useEffect(() => onMeetingChange(refresh), [refresh])
-  useEffect(() => window.scrollTo(0, 0), [route])
+  // (braces: newer browsers return a promise from scrollTo, which React would
+  // take for a clean-up function and crash calling on the next route)
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [route])
 
   // Leaving the recorder without stopping keeps the recording as a draft.
   useEffect(() => {

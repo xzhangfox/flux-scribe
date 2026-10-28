@@ -1,4 +1,4 @@
-import { isTransient, transcribe, writeMinutes, type VoiceSample } from './api'
+import { inlineRoom, isTransient, transcribe, writeMinutes, type VoiceSample } from './api'
 import { clock, transcriptText } from './format'
 import { frameAt, frameSeconds, indexDuration, indexFrames, sliceFrames, type FrameIndex } from './frames'
 import { decodeMono16k } from './encode'
@@ -8,13 +8,17 @@ import { notify, setBusy, setIdle } from './activity'
 import type { Job, Meeting, Segment, Speaker, Usage, VoiceRef } from './types'
 
 // Runs (or resumes) a meeting's processing: transcription with speakers,
-// then minutes. Up to ~20 minutes of audio goes to the model in one piece.
-// Anything longer is cut into ~15-minute parts at natural pauses and
+// then minutes. A recording small enough to ride inside one request goes
+// to the model in one piece. Anything longer is cut at natural pauses into
+// parts that each still ride inside their request (~10 minutes of the
+// recorder's MP3), so no part ever needs the separate upload, and
 // transcribed part by part; each part after the first carries a few
 // seconds of every voice already heard, so speaker labels hold across the
-// whole meeting. Every finished part is saved straight away: a reload,
-// a phone that put the page to sleep or a dropped connection costs at most
-// the part in flight, and processing picks up where it stopped.
+// whole meeting. An answer cut off before the end of its part keeps what
+// it has, and the rest becomes a part of its own. Every finished part is
+// saved straight away: a reload, a phone that put the page to sleep or a
+// dropped connection costs at most the part in flight, and processing
+// picks up where it stopped.
 type Listener = (id: string) => void
 const listeners = new Set<Listener>()
 export const onMeetingChange = (fn: Listener) => {
@@ -48,15 +52,16 @@ export function etaSeconds(m: Meeting): number | null {
   if (!p || !m.job) return null
   const done = m.job.done - p.parts
   if (done < 1) return null
-  return ((Date.now() - p.at) / done) * (m.job.cuts.length - 1 - m.job.done)
+  return ((Date.now() - p.at) / 1000 / done) * (m.job.cuts.length - 1 - m.job.done)
 }
 
-const PART_SEC = 15 * 60
+const PART_MAX_SEC = 15 * 60
+const PART_MIN_SEC = 4 * 60
 const ONE_PASS_MAX = 20 * 60
 const SEARCH_SEC = 60
-const MIN_LAST_SEC = 7.5 * 60 // a shorter tail joins the part before (≤ ~22 min)
 const MAX_REFS = 8
 const REF_SEC = 8
+const RESEND_MIN_SEC = 30 // a cut-off answer's rest is sent again once it got this far
 
 class Cancelled extends Error {}
 
@@ -107,18 +112,26 @@ export async function processMeeting(id: string) {
       if (!audio) throw new Error("This meeting's recording was removed, so it can't be transcribed again.")
       m = await stage('Preparing audio')
       const ix = await indexAudio(audio, m.mimeType)
+      const max = ix ? partLimit(ix) : null
       let job = m.job
       if (!job) {
         const duration = ix ? indexDuration(ix) : m.durationSec
-        job = { cuts: ix && duration > ONE_PASS_MAX ? await planCuts(audio, ix, duration, signal) : [0, duration], done: 0, refs: [] }
+        job = { cuts: !ix || whole(audio, duration) ? [0, duration] : await planCuts(audio, ix, 0, duration, max ?? PART_MAX_SEC, signal), done: 0, refs: [] }
         m = await write({ job, segments: [], speakers: [], truncated: false })
       }
-      const parts = job.cuts.length - 1
       pace.set(id, { at: Date.now(), parts: job.done })
-      for (let k = job.done; k < parts; k++) {
+      for (let k = job.done; k < job.cuts.length - 1; k++) {
+        // A part planned too big to ride inline (by an earlier version, or
+        // the rest of a cut-off answer): what's left is planned again.
+        const span = job.cuts[k + 1] - job.cuts[k]
+        if (ix && max && !(job.cuts.length === 2 ? whole(audio, span) : span <= max + 1)) {
+          job = { ...job, cuts: [...job.cuts.slice(0, k), ...(await planCuts(audio, ix, job.cuts[k], job.cuts[job.cuts.length - 1], max, signal))] }
+          m = await write({ job })
+        }
+        const parts = job.cuts.length - 1
         m = await stage(parts > 1 ? `Transcribing part ${k + 1} of ${parts}` : 'Transcribing & separating speakers')
-        const from = ix && parts > 1 ? frameAt(ix, job.cuts[k]) : 0
-        const to = ix && parts > 1 ? frameAt(ix, job.cuts[k + 1]) : 0
+        const from = ix ? frameAt(ix, job.cuts[k]) : 0
+        const to = ix ? frameAt(ix, job.cuts[k + 1]) : 0
         const offset = ix ? from * frameSeconds(ix) : 0
         const blob = ix && parts > 1 ? sliceFrames(audio, ix, from, to) : audio
         const mimeType = ix?.mimeType || m.mimeType
@@ -135,7 +148,8 @@ export async function processMeeting(id: string) {
         )
         check()
         if (parts === 1 && !t.segments.length) throw new Error('No speech was found in this recording.')
-        const length = ix && parts > 1 ? (to - from) * frameSeconds(ix) : Infinity
+        const partSec = ix ? (to - from) * frameSeconds(ix) : Infinity
+        const length = parts > 1 ? partSec : Infinity
         let found = t.segments
         // Times should be within the part; if the model gave meeting times
         // instead, take the part's start back off.
@@ -144,13 +158,18 @@ export async function processMeeting(id: string) {
         const segments: Segment[] = found
           .filter((s) => s.start <= length + 2)
           .map((s) => ({ ...s, start: s.start + offset, end: Math.max(s.start, Math.min(s.end, length + 2)) + offset }))
-        const current: Job = job
-        const next: Job | undefined = k + 1 < parts ? { ...current, done: k + 1, refs: pickRefs(current.refs, segments) } : undefined
+        // Cut off before the end of its part (the output limit, or a model
+        // stuck repeating a line): what came back is kept, and the rest of
+        // the part is sent again as a part of its own.
+        const reached = segments.reduce((n, s) => Math.max(n, s.end - offset), 0)
+        const resend = !!ix && t.truncated && reached >= RESEND_MIN_SEC && reached < partSec - 15
+        const current: Job = resend ? { ...job, cuts: [...job.cuts.slice(0, k + 1), offset + reached, ...job.cuts.slice(k + 1)] } : job
+        const next: Job | undefined = k + 1 < current.cuts.length - 1 ? { ...current, done: k + 1, refs: pickRefs(current.refs, segments) } : undefined
         m = await write((cur) => ({
           segments: [...cur.segments, ...segments],
           speakers: mergeSpeakers(cur.speakers, t.speakers),
           language: cur.language || t.language,
-          truncated: cur.truncated || t.truncated,
+          truncated: cur.truncated || (t.truncated && !resend && reached < partSec - 15),
           job: next,
           ...spend(t.usage)(cur),
         }))
@@ -194,18 +213,32 @@ async function indexAudio(audio: Blob, mimeType: string): Promise<FrameIndex | n
   }
 }
 
-/** Part boundaries every ~15 minutes, each moved to the quietest moment
- *  within a minute of it, so no word is cut in half. */
-async function planCuts(audio: Blob, ix: FrameIndex, duration: number, signal: AbortSignal) {
-  const cuts = [0]
-  let target = PART_SEC
-  while (duration - target > MIN_LAST_SEC) {
+/** Whether the whole recording rides inline in one request. */
+const whole = (audio: Blob, duration: number) => duration <= ONE_PASS_MAX && audio.size <= inlineRoom()
+
+/** The longest part that still rides inline with its request, voice
+ *  samples included (~11 minutes of the recorder's 32 kbps MP3): no upload
+ *  step, no Files API, one short call. Null for audio too dense for that
+ *  (a kept high-bitrate upload), whose parts go through the upload. */
+function partLimit(ix: FrameIndex): number | null {
+  const perSec = (ix.offsets[ix.count] - ix.offsets[0]) / indexDuration(ix)
+  const sec = (inlineRoom(MAX_REFS * REF_SEC * perSec) / perSec) * 0.95
+  return sec >= PART_MIN_SEC ? Math.min(PART_MAX_SEC, sec) : null
+}
+
+/** Part boundaries from `start` to `end`, no part longer than `max`, each
+ *  cut moved to the quietest moment within a minute of its planned time,
+ *  so no word is cut in half. */
+async function planCuts(audio: Blob, ix: FrameIndex, start: number, end: number, max: number, signal: AbortSignal) {
+  const cuts = [start]
+  const step = max - SEARCH_SEC
+  for (let last = start; end - last > max; last = cuts[cuts.length - 1]) {
     if (signal.aborted) throw new Cancelled()
-    const cut = await quietestNear(audio, ix, target)
-    cuts.push(cut)
-    target = cut + PART_SEC
+    // (the last two parts share what's left, rather than leaving a short tail)
+    const left = end - last
+    cuts.push(await quietestNear(audio, ix, left < 2 * step ? last + left / 2 : last + step))
   }
-  cuts.push(duration)
+  cuts.push(end)
   return cuts
 }
 
@@ -301,9 +334,12 @@ function back(signal: AbortSignal) {
   })
 }
 
+const RETRY_MS = [2000, 8000, 30000, 60000, 120000]
+
 /** Retries network failures and busy servers: waiting for the page to come
  *  back if it's in the background or offline (a phone pauses background
- *  pages), otherwise after 2 s, 8 s and 30 s. */
+ *  pages), otherwise after 2 s, 8 s, 30 s, 1 and 2 minutes (a busy model
+ *  can take a few minutes to free up, and a long meeting makes many calls). */
 async function retrying<T>(fn: () => Promise<T>, signal: AbortSignal, say: (msg: string) => void): Promise<T> {
   for (let attempt = 0; ; ) {
     try {
@@ -316,9 +352,9 @@ async function retrying<T>(fn: () => Promise<T>, signal: AbortSignal, say: (msg:
         await back(signal)
         continue
       }
-      if (attempt >= 3) throw e
-      say(`Connection trouble — retrying (${attempt + 1}/3)`)
-      await sleep([2000, 8000, 30000][attempt++], signal)
+      if (attempt >= RETRY_MS.length) throw e
+      say(`Connection trouble — retrying (${attempt + 1}/${RETRY_MS.length})`)
+      await sleep(RETRY_MS[attempt++], signal)
     }
   }
 }

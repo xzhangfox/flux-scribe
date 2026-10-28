@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/transcribe.ts": { "maxDuration": 300 },
-    "api/minutes.ts": { "maxDuration": 120 },
+    "api/minutes.ts": { "maxDuration": 300 },
     "api/ask.ts": { "maxDuration": 60 },
     "api/upload-url.ts": { "maxDuration": 15 }
   }

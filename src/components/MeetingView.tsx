@@ -499,7 +499,10 @@ function Ask({ m, onSeek, onChat }: { m: Meeting; onSeek: (t: number) => void; o
   const [err, setErr] = useState('')
   const end = useRef<HTMLDivElement>(null)
   const chat = m.chat
-  useEffect(() => end.current?.scrollIntoView({ block: 'nearest' }), [chat.length, busy])
+  // (braces: scrollIntoView returns a promise in newer browsers, not a clean-up)
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'nearest' })
+  }, [chat.length, busy])
   const names = m.speakers.map((s) => speakerName(m.speakers, s.id))
   const suggestions = ['What did we decide?', `What is ${names[1] || names[0] || 'each person'} responsible for?`, 'Were there any disagreements?', 'What questions were left open?']
 
